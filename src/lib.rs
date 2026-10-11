@@ -1,4 +1,4 @@
-//! WallpaperFlowZero 核心库。
+//! WallpaperRust 核心库。
 //!
 //! 桌面版与锁屏版共享：图源策略、下载、JPEG 校验、壁纸设置。
 //! 两个 binary 各自负责交互逻辑（桌面版无界面直接退出，锁屏版带预览窗口）。
@@ -65,13 +65,54 @@ pub fn fetch_wallpaper_bytes(width: u32, height: u32) -> Option<Vec<u8>> {
     None
 }
 
+/// 清扫应用临时目录中崩溃/被杀进程遗留的过期临时文件（垃圾回收）。
+///
+/// 只删除本应用命名（temp_wallpaper_*.jpg）且修改时间超过
+/// [`config::STALE_TEMP_SECS`] 的文件；新文件（可能属于并发实例）不动。
+/// 单次运行只持续数秒且正常退出会自行删除，因此能留下的旧文件必然来自异常退出。
+pub fn cleanup_stale_temp_files() {
+    let Some(root) = sysinfo::temp_path_root() else {
+        return;
+    };
+    let dir = config::temp_dir(&root);
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return;
+    };
+    let now = now_secs();
+    for entry in entries.flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if !config::is_temp_file(&name) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        let modified_secs = modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if config::is_stale(modified_secs, now, config::STALE_TEMP_SECS) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// 下载壁纸并写入临时文件，返回临时文件路径。
+///
+/// 下载前先执行一次垃圾回收（覆盖桌面、锁屏、换一张三个入口）。
 pub fn download_to_temp() -> Option<String> {
-    let (w, h) = screen_resolution();
-    let data = fetch_wallpaper_bytes(w, h)?;
     let root = sysinfo::temp_path_root().unwrap_or_else(|| "C:\\Windows\\Temp".to_string());
     let dir = config::temp_dir(&root);
     fs::create_dir_all(&dir).ok()?;
+    cleanup_stale_temp_files();
+
+    let (w, h) = screen_resolution();
+    let data = fetch_wallpaper_bytes(w, h)?;
     let ts = now_secs();
     let path = config::temp_download_path(&root, ts);
     fs::write(&path, &data).ok()?;

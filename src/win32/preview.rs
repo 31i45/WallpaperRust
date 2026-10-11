@@ -525,18 +525,11 @@ unsafe extern "system" fn wnd_proc(
                     DestroyWindow(hwnd);
                 }
                 BTN_NEXT => {
-                    // 换一张：禁用按钮、显示加载、重新下载、恢复
+                    // 换一张：禁用按钮显示加载，先下载新图，
+                    // 成功后再释放并删除旧图；失败则保留当前图供重试。
                     let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut PreviewState;
                     if !state_ptr.is_null() {
                         let state = &mut *state_ptr;
-                        if let Some(pic) = state.picture {
-                            ((*(*pic).lpVtbl).Release)(pic);
-                            state.picture = None;
-                        }
-                        if let Some(old) = state.image_path.take() {
-                            let _ = std::fs::remove_file(&old);
-                        }
-                        state.loading = true;
 
                         let btn_set = GetDlgItem(hwnd, BTN_SET as c_int);
                         let btn_next = GetDlgItem(hwnd, BTN_NEXT as c_int);
@@ -548,14 +541,31 @@ unsafe extern "system" fn wnd_proc(
                         InvalidateRect(hwnd, core::ptr::null(), 1);
 
                         // 下载（阻塞 UI，但有加载提示）
-                        if let Some(new_path) = crate::download_to_temp() {
-                            state.image_path = Some(new_path);
-                            state.loading = false;
+                        match crate::download_to_temp() {
+                            Some(new_path) => {
+                                // 新图就绪，再替换旧资源
+                                if let Some(pic) = state.picture.take() {
+                                    ((*(*pic).lpVtbl).Release)(pic);
+                                }
+                                if let Some(old) = state.image_path.take() {
+                                    let _ = std::fs::remove_file(&old);
+                                }
+                                state.image_path = Some(new_path);
+                                state.loading = false;
+                                let title: Vec<u16> =
+                                    "锁屏壁纸预览".encode_utf16().chain(Some(0)).collect();
+                                SetWindowTextW(hwnd, title.as_ptr());
+                            }
+                            None => {
+                                // 下载失败：保留当前图片，用户可重试
+                                let fail_title: Vec<u16> = "下载失败，请再试一次"
+                                    .encode_utf16()
+                                    .chain(Some(0))
+                                    .collect();
+                                SetWindowTextW(hwnd, fail_title.as_ptr());
+                            }
                         }
 
-                        let title: Vec<u16> =
-                            "锁屏壁纸预览".encode_utf16().chain(Some(0)).collect();
-                        SetWindowTextW(hwnd, title.as_ptr());
                         EnableWindow(btn_set, 1);
                         EnableWindow(btn_next, 1);
                         InvalidateRect(hwnd, core::ptr::null(), 1);
