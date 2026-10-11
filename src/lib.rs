@@ -1,0 +1,110 @@
+//! WallpaperFlowZero 核心库。
+//!
+//! 桌面版与锁屏版共享：图源策略、下载、JPEG 校验、壁纸设置。
+//! 两个 binary 各自负责交互逻辑（桌面版无界面直接退出，锁屏版带预览窗口）。
+
+pub mod config;
+pub mod schedule;
+pub mod sources;
+pub mod validate;
+pub mod win32;
+
+use schedule::*;
+use sources::*;
+use std::fs;
+use std::thread;
+use validate::is_valid_jpeg;
+use win32::http;
+use win32::sysinfo;
+use win32::wallpaper;
+
+/// 获取当前主显示器分辨率。
+pub fn screen_resolution() -> (u32, u32) {
+    sysinfo::screen_resolution()
+}
+
+/// 解析图源，返回候选图片 URL 列表（按优先级排序）。
+pub fn resolve_image_urls(source: &Source, width: u32, height: u32) -> Vec<String> {
+    match source.kind {
+        SourceKind::Direct => vec![render_url(source.url, width, height)],
+        SourceKind::BingDaily => {
+            // 请求 n=8 获取 8 张图片，随机选一张增加多样性
+            let json = match http::download_text(source.url) {
+                Some(t) => t,
+                None => return vec![],
+            };
+            let urlbases = extract_all_bing_urlbases(&json);
+            if urlbases.is_empty() {
+                return vec![];
+            }
+            let idx = (fast_rand() as usize) % urlbases.len();
+            bing_image_urls(urlbases[idx])
+        }
+    }
+}
+
+/// 遍历所有图源，下载并校验第一张有效 JPEG，返回字节数据。
+/// 全部失败返回 None。
+pub fn fetch_wallpaper_bytes(width: u32, height: u32) -> Option<Vec<u8>> {
+    let sources = builtin_sources();
+    let ordered = shuffle_sources(&sources, fast_rand);
+
+    for source in &ordered {
+        let urls = resolve_image_urls(source, width, height);
+        for url in &urls {
+            for _ in 0..MAX_DOWNLOAD_RETRIES {
+                if let Some(data) = http::download(url)
+                    && is_valid_jpeg(&data)
+                {
+                    return Some(data);
+                }
+                thread::sleep(std::time::Duration::from_secs(RETRY_DELAY_SECS));
+            }
+        }
+    }
+    None
+}
+
+/// 下载壁纸并写入临时文件，返回临时文件路径。
+pub fn download_to_temp() -> Option<String> {
+    let (w, h) = screen_resolution();
+    let data = fetch_wallpaper_bytes(w, h)?;
+    let root = sysinfo::temp_path_root().unwrap_or_else(|| "C:\\Windows\\Temp".to_string());
+    let dir = config::temp_dir(&root);
+    fs::create_dir_all(&dir).ok()?;
+    let ts = now_secs();
+    let path = config::temp_download_path(&root, ts);
+    fs::write(&path, &data).ok()?;
+    Some(path)
+}
+
+/// 设为桌面壁纸。
+pub fn set_desktop_wallpaper(image_path: &str) -> bool {
+    wallpaper::set_wallpaper(image_path)
+}
+
+/// 设为锁屏壁纸（需管理员权限）。
+pub fn set_lock_wallpaper(image_path: &str) -> bool {
+    wallpaper::set_lock_screen_wallpaper(image_path)
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn fast_rand() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEED: AtomicU64 = AtomicU64::new(0);
+    let mut s = SEED.load(Ordering::Relaxed);
+    if s == 0 {
+        s = now_secs() ^ (std::process::id() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+    s ^= s << 13;
+    s ^= s >> 7;
+    s ^= s << 17;
+    SEED.store(s, Ordering::Relaxed);
+    s
+}

@@ -1,0 +1,31 @@
+[package]
+name = "wallpaper_rust"
+version = "0.2.0"
+edition = "2024"
+authors = ["31i45"]
+license = "MIT"
+description = "双击即换的 Windows 壁纸小工具：桌面版与锁屏版分离。"
+
+[lib]
+name = "wallpaper_rust"
+path = "src/lib.rs"
+
+[[bin]]
+name = "DesktopRust"
+path = "src/main.rs"
+
+[[bin]]
+name = "LockscreenRust"
+path = "src/bin/lockscreen.rs"
+
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+panic = "abort"
