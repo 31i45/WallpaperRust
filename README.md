@@ -12,10 +12,11 @@
 ## 特性
 
 - **零第三方依赖**：手写 Win32 FFI（WinHTTP / SystemParametersInfo / PersonalizationCSP / COM），无任何 crate 依赖
-- **单文件 130KB 左右**：DesktopRust ~132KB，LockscreenRust ~140KB，无需安装
+- **单文件 150KB 左右**：DesktopRust ~144KB，LockscreenRust ~152KB，无需安装
 - **高质量图源**：Bing 每日壁纸 UHD（4K），每次从近 8 张精选中随机取一张；UHD→HD→Picsum 多级降级
 - **下载完整性校验**：JPEG SOI/EOI 标记 + 最小字节三重校验，杜绝半截图片导致黑屏
 - **锁屏预览**：设置锁屏前先预览，可"换一张"，满意后再应用（锁屏后无法直接查看效果）
+- **多显示器 DPI 感知**：`GetDpiForWindow` + `WM_DPICHANGED`，窗口在不同缩放比的显示器间拖拽时自动调整
 - **静默哲学**：桌面版无窗口、无日志、无弹窗，成功即退出
 
 ## 使用
@@ -40,7 +41,7 @@ cargo build --release
 
 产物位于 `target/release/DesktopRust.exe` 与 `target/release/LockscreenRust.exe`。
 
-质量门禁：
+质量门禁（33 个单元测试）：
 
 ```powershell
 cargo fmt --all -- --check
@@ -61,6 +62,9 @@ Windows 读取该 CSP 注册表项应用锁屏。因需写 HKLM 与 ProgramData�
 **图源策略**：Bing API（`HPImageArchive`，n=8）返回多张精选摄影，
 零依赖字符串解析提取 `urlbase`，优先下载 `_UHD.jpg`，失败降级 `_1920x1080.jpg`；
 所有图源 Fisher-Yates 洗牌后逐个尝试。
+
+**临时文件管理**：下载文件命名 `temp_{时间戳}_{PID}_{序号}.jpg` 避免同秒冲突；
+每次下载前清扫 `%TEMP%\WallpaperRust` 中超过 1 小时的崩溃残留文件。
 
 ## 关于本项目
 
