@@ -10,11 +10,15 @@ pub mod win32;
 
 use sources::*;
 use std::fs;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use validate::is_valid_jpeg;
 use win32::http;
 use win32::sysinfo;
 use win32::wallpaper;
+
+/// 临时文件进程内单调序号，保证同秒内连续下载也不会重名。
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// 解析图源，返回候选图片 URL 列表（按优先级排序）。
 pub(crate) fn resolve_image_urls(source: &Source, width: u32, height: u32) -> Vec<String> {
@@ -45,13 +49,16 @@ pub(crate) fn fetch_wallpaper_bytes(width: u32, height: u32) -> Option<Vec<u8>> 
     for source in &ordered {
         let urls = resolve_image_urls(source, width, height);
         for url in &urls {
-            for _ in 0..config::MAX_DOWNLOAD_RETRIES {
+            for attempt in 0..config::MAX_DOWNLOAD_RETRIES {
                 if let Some(data) = http::download(url)
                     && is_valid_jpeg(&data)
                 {
                     return Some(data);
                 }
-                thread::sleep(std::time::Duration::from_secs(config::RETRY_DELAY_SECS));
+                // 仅在两次尝试之间等待，最后一次失败后立即尝试下一个 URL
+                if attempt + 1 < config::MAX_DOWNLOAD_RETRIES {
+                    thread::sleep(std::time::Duration::from_secs(config::RETRY_DELAY_SECS));
+                }
             }
         }
     }
@@ -107,7 +114,9 @@ pub fn download_to_temp() -> Option<String> {
     let (w, h) = sysinfo::screen_resolution();
     let data = fetch_wallpaper_bytes(w, h)?;
     let ts = now_secs();
-    let path = config::temp_download_path(&root, ts);
+    // pid + 进程内单调序号：即使同秒内连续下载两次，文件名也不重复
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let path = config::temp_download_path(&root, ts, std::process::id(), seq);
     fs::write(&path, &data).ok()?;
     Some(path)
 }
@@ -152,11 +161,14 @@ fn now_secs() -> u64 {
 }
 
 fn fast_rand() -> u64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
     static SEED: AtomicU64 = AtomicU64::new(0);
     let mut s = SEED.load(Ordering::Relaxed);
     if s == 0 {
         s = now_secs() ^ (std::process::id() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        // xorshift 以 0 为不动点，极端情况下种子恰好为 0 时强制置非零
+        if s == 0 {
+            s = 0x9E37_79B9_7F4A_7C15;
+        }
     }
     s ^= s << 13;
     s ^= s >> 7;

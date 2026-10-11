@@ -17,13 +17,18 @@ pub fn temp_dir(root: &str) -> String {
     format!("{}\\{}", root, APP_NAME)
 }
 
-/// 给定临时目录和时间戳，返回临时下载文件路径。
-pub fn temp_download_path(temp_root: &str, timestamp_secs: u64) -> String {
+/// 给定临时目录、时间戳、进程 ID 与进程内序号，返回临时下载文件路径。
+///
+/// 同时包含 pid 与单调 seq：仅用秒级时间戳命名时，锁屏"换一张"若在
+/// 同一秒内完成下载，新文件会与旧文件同名——旧文件随后被删除会误删新文件。
+pub fn temp_download_path(temp_root: &str, timestamp_secs: u64, pid: u32, seq: u64) -> String {
     format!(
-        "{}\\{}{}.jpg",
+        "{}\\{}{}_{}_{}.jpg",
         temp_dir(temp_root),
         TEMP_PREFIX,
-        timestamp_secs
+        timestamp_secs,
+        pid,
+        seq
     )
 }
 
@@ -53,10 +58,19 @@ mod tests {
     }
 
     #[test]
-    fn temp_download_path_has_timestamp() {
+    fn temp_download_path_has_timestamp_pid_seq() {
         assert_eq!(
-            temp_download_path("C:\\Temp", 12345),
-            "C:\\Temp\\WallpaperRust\\temp_wallpaper_12345.jpg"
+            temp_download_path("C:\\Temp", 12345, 678, 0),
+            "C:\\Temp\\WallpaperRust\\temp_wallpaper_12345_678_0.jpg"
+        );
+    }
+
+    #[test]
+    fn temp_download_path_unique_per_seq_even_same_second() {
+        // 同秒、同进程，序号不同 → 路径必须不同（"换一张"防误删的关键）
+        assert_ne!(
+            temp_download_path("C:\\Temp", 100, 1, 0),
+            temp_download_path("C:\\Temp", 100, 1, 1)
         );
     }
 

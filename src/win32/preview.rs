@@ -16,10 +16,21 @@ pub const WM_COMMAND: UINT = 0x0111;
 pub const WM_DESTROY: UINT = 0x0002;
 pub const WM_CLOSE: UINT = 0x0010;
 pub const WM_SIZE: UINT = 0x0005;
+pub const WM_SETFONT: UINT = 0x0030;
 
 pub const DT_CENTER: UINT = 0x0000_0001;
 pub const DT_VCENTER: UINT = 0x0000_0004;
 pub const DT_SINGLELINE: UINT = 0x0000_0020;
+
+/// GetDeviceCaps 索引：每逻辑英寸像素数（X 轴 DPI）。
+pub const LOGPIXELSX: c_int = 88;
+
+// CreateFontW 参数
+pub const FW_NORMAL: c_int = 400;
+pub const DEFAULT_CHARSET: c_int = 1;
+pub const OUT_TT_PRECIS: c_int = 4;
+pub const CLEARTYPE_QUALITY: c_int = 5;
+pub const DEFAULT_PITCH: c_int = 0;
 
 pub const WS_OVERLAPPEDWINDOW: DWORD = 0x00CF_0000;
 pub const WS_VISIBLE: DWORD = 0x1000_0000;
@@ -80,6 +91,7 @@ pub struct WNDCLASSEXW {
 }
 
 pub type HDC = HANDLE;
+pub type HFONT = HANDLE;
 pub type HICON = HANDLE;
 pub type HCURSOR = HANDLE;
 pub type HBRUSH = HANDLE;
@@ -191,6 +203,33 @@ unsafe extern "system" {
         format: UINT,
     ) -> c_int;
     pub fn GetDlgItem(hDlg: HWND, nIDDlgItem: c_int) -> HWND;
+    pub fn GetDC(hWnd: HWND) -> HDC;
+    pub fn ReleaseDC(hWnd: HWND, hDC: HDC) -> c_int;
+    pub fn SendMessageW(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) -> LRESULT;
+    pub fn SetProcessDPIAware() -> BOOL;
+}
+
+#[link(name = "gdi32")]
+unsafe extern "system" {
+    pub fn GetDeviceCaps(hdc: HDC, index: c_int) -> c_int;
+    pub fn CreateFontW(
+        cHeight: c_int,
+        cWidth: c_int,
+        cEscapement: c_int,
+        cOrientation: c_int,
+        cWeight: c_int,
+        bItalic: DWORD,
+        bUnderline: DWORD,
+        bStrikeOut: DWORD,
+        iCharSet: c_int,
+        iOutPrecision: c_int,
+        iClipPrecision: c_int,
+        iQuality: c_int,
+        iPitchAndFamily: c_int,
+        pszFaceName: LPCWSTR,
+    ) -> HFONT;
+    pub fn SelectObject(hdc: HDC, h: HANDLE) -> HANDLE;
+    pub fn DeleteObject(ho: HANDLE) -> BOOL;
 }
 
 pub type ATOM = u16;
@@ -235,12 +274,23 @@ unsafe extern "system" {
 /// 既消除层间反向依赖，也便于在测试中替换为假数据源。
 pub type Fetcher = dyn FnMut() -> Option<String>;
 
+/// 将 96 DPI 基准下的像素值缩放到实际 DPI（纯逻辑，可测试）。
+///
+/// 采用 Win32 MulDiv 的语义（四舍五入到最近像素）：(v * dpi + 48) / 96。
+pub fn scale_px(value: c_int, dpi: u32) -> c_int {
+    ((value as i64 * dpi as i64 + 48) / 96) as c_int
+}
+
 /// 预览窗口状态。
 pub struct PreviewState {
     pub image_path: Option<String>,
     pub picture: Option<*mut IPicture>,
     pub loading: bool,
     pub fetch: Box<Fetcher>,
+    /// 窗口所在显示器 DPI（96/120/144…），所有尺寸按它缩放。
+    pub dpi: u32,
+    /// 按 DPI 缩放的 UI 字体（退出时释放）。
+    pub font: HFONT,
 }
 
 /// 用户是否点击了"设为锁屏"。
@@ -260,13 +310,32 @@ where
     CONFIRMED.store(false, Ordering::SeqCst);
     unsafe {
         OleInitialize(core::ptr::null_mut());
+        // 声明系统级 DPI 感知：否则在缩放显示器（如 150%）上整个窗口
+        // 会被系统位图拉伸，图片和文字都发虚。必须在创建窗口/取 DC 前调用。
+        SetProcessDPIAware();
     }
+
+    // 读取系统 DPI（96 = 100%，144 = 150%），全部 UI 尺寸按它缩放
+    let dpi = unsafe {
+        let dc = GetDC(core::ptr::null_mut());
+        let mut d = 96u32;
+        if !dc.is_null() {
+            let v = GetDeviceCaps(dc, LOGPIXELSX);
+            if v >= 96 {
+                d = v as u32;
+            }
+            ReleaseDC(core::ptr::null_mut(), dc);
+        }
+        d
+    };
 
     let state = Box::new(PreviewState {
         image_path: None,
         picture: None,
         loading: true,
         fetch: Box::new(fetch),
+        dpi,
+        font: core::ptr::null_mut(),
     });
     let state_ptr = Box::into_raw(state);
 
@@ -305,8 +374,8 @@ where
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            900,
-            700,
+            scale_px(900, dpi),
+            scale_px(700, dpi),
             core::ptr::null_mut(),
             core::ptr::null_mut(),
             hinstance,
@@ -376,6 +445,9 @@ where
         if let Some(pic) = state.picture {
             ((*(*pic).lpVtbl).Release)(pic);
         }
+        if !state.font.is_null() {
+            DeleteObject(state.font);
+        }
         OleUninitialize();
     }
 
@@ -394,56 +466,87 @@ unsafe extern "system" fn wnd_proc(
             let state_ptr = (*create_struct).lpCreateParams as *mut PreviewState;
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
 
-            // 创建按钮
+            let dpi = (*state_ptr).dpi;
+
+            // 按 DPI 创建 UI 字体（9 磅 Segoe UI），供按钮与提示文字共用
+            let face: Vec<u16> = "Segoe UI".encode_utf16().chain(Some(0)).collect();
+            let font = CreateFontW(
+                -(((9 * dpi as i64) + 36) / 72) as c_int, // -MulDiv(9, dpi, 72)
+                0,
+                0,
+                0,
+                FW_NORMAL,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET,
+                OUT_TT_PRECIS,
+                0,
+                CLEARTYPE_QUALITY,
+                DEFAULT_PITCH,
+                face.as_ptr(),
+            );
+            (*state_ptr).font = font;
+
+            // 创建按钮（尺寸按 DPI 缩放；位置由 WM_SIZE 统一布局）
             let btn_class: Vec<u16> = "BUTTON".encode_utf16().chain(Some(0)).collect();
             let set_text: Vec<u16> = "设为锁屏壁纸".encode_utf16().chain(Some(0)).collect();
             let next_text: Vec<u16> = "换一张".encode_utf16().chain(Some(0)).collect();
-            CreateWindowExW(
+            let btn_set = CreateWindowExW(
                 0,
                 btn_class.as_ptr(),
                 set_text.as_ptr(),
                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                 0,
                 0,
-                150,
-                40,
+                scale_px(150, dpi),
+                scale_px(40, dpi),
                 hwnd,
                 BTN_SET as HANDLE,
                 GetModuleHandleW(core::ptr::null()),
                 core::ptr::null_mut(),
             );
-            CreateWindowExW(
+            let btn_next = CreateWindowExW(
                 0,
                 btn_class.as_ptr(),
                 next_text.as_ptr(),
                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                 0,
                 0,
-                120,
-                40,
+                scale_px(120, dpi),
+                scale_px(40, dpi),
                 hwnd,
                 BTN_NEXT as HANDLE,
                 GetModuleHandleW(core::ptr::null()),
                 core::ptr::null_mut(),
             );
+            SendMessageW(btn_set, WM_SETFONT, font as WPARAM, 1);
+            SendMessageW(btn_next, WM_SETFONT, font as WPARAM, 1);
             // 初始禁用按钮（下载中）
-            let btn_set = GetDlgItem(hwnd, BTN_SET as c_int);
-            let btn_next = GetDlgItem(hwnd, BTN_NEXT as c_int);
             EnableWindow(btn_set, 0);
             EnableWindow(btn_next, 0);
             0
         }
         WM_SIZE => {
-            // 窗口大小变化时，重新布局按钮到底部居中
+            // 窗口大小变化时，按 DPI 把按钮重新布局到底部居中
+            let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut PreviewState;
+            let dpi = if state_ptr.is_null() {
+                96
+            } else {
+                (*state_ptr).dpi
+            };
             let btn_set = GetDlgItem(hwnd, BTN_SET as c_int);
             let btn_next = GetDlgItem(hwnd, BTN_NEXT as c_int);
             let width = (lparam & 0xFFFF) as c_int;
             let height = ((lparam >> 16) & 0xFFFF) as c_int;
-            let btn_y = height - 70;
-            let total_w = 150 + 20 + 120;
-            let start_x = (width - total_w) / 2;
-            MoveWindow(btn_set, start_x, btn_y, 150, 40, 1);
-            MoveWindow(btn_next, start_x + 150 + 20, btn_y, 120, 40, 1);
+            let set_w = scale_px(150, dpi);
+            let next_w = scale_px(120, dpi);
+            let btn_h = scale_px(40, dpi);
+            let gap = scale_px(20, dpi);
+            let btn_y = height - scale_px(70, dpi);
+            let start_x = (width - set_w - gap - next_w) / 2;
+            MoveWindow(btn_set, start_x, btn_y, set_w, btn_h, 1);
+            MoveWindow(btn_next, start_x + set_w + gap, btn_y, next_w, btn_h, 1);
             0
         }
         WM_PAINT => {
@@ -455,6 +558,13 @@ unsafe extern "system" fn wnd_proc(
 
             let mut ps: PAINTSTRUCT = core::mem::zeroed();
             let hdc = BeginPaint(hwnd, &mut ps);
+            // 提示文字使用按 DPI 缩放的字体（图片 Render 不受字体影响）
+            let old_obj = if state.font.is_null() {
+                core::ptr::null_mut()
+            } else {
+                SelectObject(hdc, state.font)
+            };
+            let dpi = state.dpi;
 
             if state.loading || state.image_path.is_none() {
                 // 显示"正在下载..."
@@ -494,13 +604,14 @@ unsafe extern "system" fn wnd_proc(
                     (vtbl.get_Width)(pic, &mut hm_w);
                     (vtbl.get_Height)(pic, &mut hm_h);
 
-                    let img_w = (hm_w as f64 * 96.0 / 2540.0) as c_int;
-                    let img_h = (hm_h as f64 * 96.0 / 2540.0) as c_int;
+                    // HIMETRIC → 像素：2540 HIMETRIC = 1 英寸
+                    let img_w = (hm_w as i64 * dpi as i64 / 2540) as c_int;
+                    let img_h = (hm_h as i64 * dpi as i64 / 2540) as c_int;
 
                     let mut client: RECT = core::mem::zeroed();
                     GetClientRect(hwnd, &mut client);
                     let cli_w = client.right - client.left;
-                    let cli_h = client.bottom - client.top - 70;
+                    let cli_h = client.bottom - client.top - scale_px(70, dpi);
 
                     let scale = (cli_w as f64 / img_w as f64).min(cli_h as f64 / img_h as f64);
                     let draw_w = (img_w as f64 * scale) as c_int;
@@ -521,9 +632,27 @@ unsafe extern "system" fn wnd_proc(
                         -hm_h,
                         core::ptr::null(),
                     );
+                } else {
+                    // 有路径但解码失败（文件损坏等罕见情况）：给出可操作提示
+                    let mut client: RECT = core::mem::zeroed();
+                    GetClientRect(hwnd, &mut client);
+                    let text: Vec<u16> = "图片加载失败，请换一张"
+                        .encode_utf16()
+                        .chain(Some(0))
+                        .collect();
+                    DrawTextW(
+                        hdc,
+                        text.as_ptr(),
+                        -1,
+                        &mut client,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+                    );
                 }
             }
 
+            if !old_obj.is_null() {
+                SelectObject(hdc, old_obj);
+            }
             EndPaint(hwnd, &ps);
             0
         }
@@ -616,4 +745,33 @@ const GWLP_USERDATA: c_int = -21;
 unsafe extern "system" {
     fn SetWindowLongPtrW(hWnd: HWND, nIndex: c_int, dwNewLong: isize) -> isize;
     fn GetWindowLongPtrW(hWnd: HWND, nIndex: c_int) -> isize;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scale_px;
+
+    #[test]
+    fn scale_px_identity_at_96_dpi() {
+        assert_eq!(scale_px(0, 96), 0);
+        assert_eq!(scale_px(120, 96), 120);
+        assert_eq!(scale_px(900, 96), 900);
+    }
+
+    #[test]
+    fn scale_px_150_percent_on_144_dpi() {
+        assert_eq!(scale_px(150, 144), 225);
+        assert_eq!(scale_px(120, 144), 180);
+        assert_eq!(scale_px(40, 144), 60);
+        assert_eq!(scale_px(20, 144), 30);
+        assert_eq!(scale_px(70, 144), 105);
+        assert_eq!(scale_px(900, 144), 1350);
+        assert_eq!(scale_px(700, 144), 1050);
+    }
+
+    #[test]
+    fn scale_px_125_percent_on_120_dpi() {
+        assert_eq!(scale_px(9, 120), 11); // 四舍五入：11.25 → 11
+        assert_eq!(scale_px(150, 120), 188); // 187.5 → 188
+    }
 }

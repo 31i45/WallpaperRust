@@ -12,12 +12,10 @@ use wallpaper_rust::{
 };
 
 fn main() {
-    // 1. 管理员权限检测：无则提权重启，当前进程退出
+    // 1. 管理员权限检测：无则尝试提权重启。无论用户是否同意 UAC，
+    //    当前这个未提权的进程都退出（提权后的新进程会继续后续流程）。
     if !is_admin() {
-        if relaunch_as_admin() {
-            return; // 提权启动成功，当前进程退出
-        }
-        // 提权失败（用户取消 UAC），静默退出
+        let _ = relaunch_as_admin();
         return;
     }
 
