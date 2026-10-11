@@ -4,6 +4,7 @@
 #![allow(non_camel_case_types, non_snake_case, non_upper_case_globals)]
 #![allow(clippy::upper_case_acronyms)] // Win32 类型名保持 SDK 原样
 
+pub mod com;
 pub mod http;
 pub mod preview;
 pub mod sysinfo;
@@ -22,6 +23,67 @@ pub type UINT = c_uint;
 pub type HKEY = *mut c_void;
 pub type LSTATUS = c_long;
 pub type HINSTANCE = HANDLE;
+pub type HWND = HANDLE;
+pub type WPARAM = usize;
+pub type LPARAM = isize;
+pub type LRESULT = isize;
+pub type ATOM = u16;
+pub type HDC = HANDLE;
+pub type HFONT = HANDLE;
+pub type HICON = HANDLE;
+pub type HCURSOR = HANDLE;
+pub type HBRUSH = HANDLE;
+pub type WNDPROC = unsafe extern "system" fn(HWND, UINT, WPARAM, LPARAM) -> LRESULT;
+
+#[repr(C)]
+pub struct POINT {
+    pub x: c_int,
+    pub y: c_int,
+}
+
+#[repr(C)]
+pub struct MSG {
+    pub hwnd: HWND,
+    pub message: UINT,
+    pub wParam: WPARAM,
+    pub lParam: LPARAM,
+    pub time: DWORD,
+    pub pt: POINT,
+}
+
+#[repr(C)]
+pub struct RECT {
+    pub left: c_long,
+    pub top: c_long,
+    pub right: c_long,
+    pub bottom: c_long,
+}
+
+#[repr(C)]
+pub struct PAINTSTRUCT {
+    pub hdc: HDC,
+    pub fErase: BOOL,
+    pub rcPaint: RECT,
+    pub fRestore: BOOL,
+    pub fIncUpdate: BOOL,
+    pub rgbReserved: [u8; 32],
+}
+
+#[repr(C)]
+pub struct WNDCLASSEXW {
+    pub cbSize: UINT,
+    pub style: UINT,
+    pub lpfnWndProc: WNDPROC,
+    pub cbClsExtra: c_int,
+    pub cbWndExtra: c_int,
+    pub hInstance: HMODULE,
+    pub hIcon: HICON,
+    pub hCursor: HCURSOR,
+    pub hbrBackground: HBRUSH,
+    pub lpszMenuName: LPCWSTR,
+    pub lpszClassName: LPCWSTR,
+    pub hIconSm: HICON,
+}
 
 pub const ERROR_SUCCESS: LSTATUS = 0;
 pub const SM_CXSCREEN: c_int = 0;
@@ -64,6 +126,61 @@ unsafe extern "system" {
         pvParam: LPVOID,
         fWinIni: UINT,
     ) -> BOOL;
+    pub fn GetModuleHandleW(lpModuleName: LPCWSTR) -> HMODULE;
+    pub fn LoadCursorW(hInstance: HMODULE, lpCursorName: LPCWSTR) -> HCURSOR;
+    pub fn LoadIconW(hInstance: HMODULE, lpIconName: LPCWSTR) -> HICON;
+    pub fn RegisterClassExW(lpWndClassEx: *const WNDCLASSEXW) -> ATOM;
+    pub fn CreateWindowExW(
+        dwExStyle: DWORD,
+        lpClassName: LPCWSTR,
+        lpWindowName: LPCWSTR,
+        dwStyle: DWORD,
+        x: c_int,
+        y: c_int,
+        nWidth: c_int,
+        nHeight: c_int,
+        hWndParent: HWND,
+        hMenu: HANDLE,
+        hInstance: HMODULE,
+        lpParam: LPVOID,
+    ) -> HWND;
+    pub fn ShowWindow(hWnd: HWND, nCmdShow: c_int) -> BOOL;
+    pub fn UpdateWindow(hWnd: HWND) -> BOOL;
+    pub fn GetMessageW(
+        lpMsg: *mut MSG,
+        hWnd: HWND,
+        wMsgFilterMin: UINT,
+        wMsgFilterMax: UINT,
+    ) -> BOOL;
+    pub fn TranslateMessage(lpMsg: *const MSG) -> BOOL;
+    pub fn DispatchMessageW(lpMsg: *const MSG) -> LRESULT;
+    pub fn DefWindowProcW(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) -> LRESULT;
+    pub fn PostQuitMessage(nExitCode: c_int);
+    pub fn DestroyWindow(hWnd: HWND) -> BOOL;
+    pub fn InvalidateRect(hWnd: HWND, lpRect: *const RECT, bErase: BOOL) -> BOOL;
+    pub fn BeginPaint(hWnd: HWND, lpPaint: *mut PAINTSTRUCT) -> HDC;
+    pub fn EndPaint(hWnd: HWND, lpPaint: *const PAINTSTRUCT) -> BOOL;
+    pub fn GetClientRect(hWnd: HWND, lpRect: *mut RECT) -> BOOL;
+    pub fn EnableWindow(hWnd: HWND, bEnable: BOOL) -> BOOL;
+    pub fn MoveWindow(
+        hWnd: HWND,
+        x: c_int,
+        y: c_int,
+        nWidth: c_int,
+        nHeight: c_int,
+        bRepaint: BOOL,
+    ) -> BOOL;
+    pub fn SetWindowTextW(hWnd: HWND, lpString: LPCWSTR) -> BOOL;
+    pub fn DrawTextW(
+        hDC: HDC,
+        lpchText: LPCWSTR,
+        cchText: c_int,
+        lprc: *mut RECT,
+        format: UINT,
+    ) -> c_int;
+    pub fn GetDlgItem(hDlg: HWND, nIDDlgItem: c_int) -> HWND;
+    pub fn SendMessageW(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) -> LRESULT;
+    pub fn SetProcessDPIAware() -> BOOL;
 }
 
 #[link(name = "advapi32")]

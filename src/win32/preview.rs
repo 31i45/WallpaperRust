@@ -2,9 +2,13 @@
 //!
 //! 因为设置锁屏后无法直接查看效果，所以先显示预览，
 //! 用户确认满意后再设为锁屏壁纸。
+//!
+//! DPI 感知：窗口创建时读取系统 DPI，所有尺寸按它缩放；
+//! 拖动到不同 DPI 的显示器时按该显示器实时重读。
 
 #![allow(unsafe_op_in_unsafe_fn)] // FFI 密集模块，unsafe 操作是常态
 
+use super::com::*;
 use super::*;
 use core::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,20 +21,12 @@ pub const WM_DESTROY: UINT = 0x0002;
 pub const WM_CLOSE: UINT = 0x0010;
 pub const WM_SIZE: UINT = 0x0005;
 pub const WM_SETFONT: UINT = 0x0030;
+pub const WM_MOVE: UINT = 0x0003;
+pub const WM_DPICHANGED: UINT = 0x02E0;
 
 pub const DT_CENTER: UINT = 0x0000_0001;
 pub const DT_VCENTER: UINT = 0x0000_0004;
 pub const DT_SINGLELINE: UINT = 0x0000_0020;
-
-/// GetDeviceCaps 索引：每逻辑英寸像素数（X 轴 DPI）。
-pub const LOGPIXELSX: c_int = 88;
-
-// CreateFontW 参数
-pub const FW_NORMAL: c_int = 400;
-pub const DEFAULT_CHARSET: c_int = 1;
-pub const OUT_TT_PRECIS: c_int = 4;
-pub const CLEARTYPE_QUALITY: c_int = 5;
-pub const DEFAULT_PITCH: c_int = 0;
 
 pub const WS_OVERLAPPEDWINDOW: DWORD = 0x00CF_0000;
 pub const WS_VISIBLE: DWORD = 0x1000_0000;
@@ -45,228 +41,12 @@ pub const IDI_APPLICATION: LPCWSTR = 32512usize as LPCWSTR;
 pub const BTN_SET: usize = 1001;
 pub const BTN_NEXT: usize = 1002;
 
-// ---- COM 类型 ----
-pub type HRESULT = i32;
-pub type ULONG = c_ulong;
-pub type LONG = i32;
-pub type SHORT = i16;
-pub type OLE_HANDLE = c_uint;
-pub type OLE_XSIZE_HIMETRIC = LONG;
-pub type OLE_YSIZE_HIMETRIC = LONG;
-pub type OLE_XPOS_HIMETRIC = LONG;
-pub type OLE_YPOS_HIMETRIC = LONG;
-
-#[repr(C)]
-pub struct RECT {
-    pub left: LONG,
-    pub top: LONG,
-    pub right: LONG,
-    pub bottom: LONG,
-}
-
-#[repr(C)]
-pub struct PAINTSTRUCT {
-    pub hdc: HDC,
-    pub fErase: BOOL,
-    pub rcPaint: RECT,
-    pub fRestore: BOOL,
-    pub fIncUpdate: BOOL,
-    pub rgbReserved: [u8; 32],
-}
-
-#[repr(C)]
-pub struct WNDCLASSEXW {
-    pub cbSize: UINT,
-    pub style: UINT,
-    pub lpfnWndProc: WNDPROC,
-    pub cbClsExtra: c_int,
-    pub cbWndExtra: c_int,
-    pub hInstance: HMODULE,
-    pub hIcon: HICON,
-    pub hCursor: HCURSOR,
-    pub hbrBackground: HBRUSH,
-    pub lpszMenuName: LPCWSTR,
-    pub lpszClassName: LPCWSTR,
-    pub hIconSm: HICON,
-}
-
-pub type HDC = HANDLE;
-pub type HFONT = HANDLE;
-pub type HICON = HANDLE;
-pub type HCURSOR = HANDLE;
-pub type HBRUSH = HANDLE;
-pub type WNDPROC = unsafe extern "system" fn(HWND, UINT, WPARAM, LPARAM) -> LRESULT;
-pub type HWND = HANDLE;
-pub type WPARAM = usize;
-pub type LPARAM = isize;
-pub type LRESULT = isize;
-
-#[repr(C)]
-pub struct IID {
-    pub data1: u32,
-    pub data2: u16,
-    pub data3: u16,
-    pub data4: [u8; 8],
-}
-
-// IID_IPicture: {7BF80980-BF32-101A-8BBB-00AA00300CAB}
-pub const IID_IPICTURE: IID = IID {
-    data1: 0x7BF8_0980,
-    data2: 0xBF32,
-    data3: 0x101A,
-    data4: [0x8B, 0xBB, 0x00, 0xAA, 0x00, 0x30, 0x0C, 0xAB],
-};
-
-#[repr(C)]
-pub struct IPictureVtbl {
-    pub QueryInterface:
-        unsafe extern "system" fn(*mut IPicture, *const IID, *mut *mut c_void) -> HRESULT,
-    pub AddRef: unsafe extern "system" fn(*mut IPicture) -> ULONG,
-    pub Release: unsafe extern "system" fn(*mut IPicture) -> ULONG,
-    pub get_Handle: unsafe extern "system" fn(*mut IPicture, *mut OLE_HANDLE) -> HRESULT,
-    pub get_hPal: unsafe extern "system" fn(*mut IPicture, *mut OLE_HANDLE) -> HRESULT,
-    pub get_Type: unsafe extern "system" fn(*mut IPicture, *mut SHORT) -> HRESULT,
-    pub get_Width: unsafe extern "system" fn(*mut IPicture, *mut OLE_XSIZE_HIMETRIC) -> HRESULT,
-    pub get_Height: unsafe extern "system" fn(*mut IPicture, *mut OLE_YSIZE_HIMETRIC) -> HRESULT,
-    pub Render: unsafe extern "system" fn(
-        *mut IPicture,
-        HDC,
-        c_int,
-        c_int,
-        c_int,
-        c_int,
-        OLE_XPOS_HIMETRIC,
-        OLE_YPOS_HIMETRIC,
-        OLE_XSIZE_HIMETRIC,
-        OLE_YSIZE_HIMETRIC,
-        *const RECT,
-    ) -> HRESULT,
-}
-
-#[repr(C)]
-pub struct IPicture {
-    pub lpVtbl: *const IPictureVtbl,
-}
-
-#[link(name = "user32")]
-unsafe extern "system" {
-    pub fn GetModuleHandleW(lpModuleName: LPCWSTR) -> HMODULE;
-    pub fn LoadCursorW(hInstance: HMODULE, lpCursorName: LPCWSTR) -> HCURSOR;
-    pub fn LoadIconW(hInstance: HMODULE, lpIconName: LPCWSTR) -> HICON;
-    pub fn RegisterClassExW(lpWndClassEx: *const WNDCLASSEXW) -> ATOM;
-    pub fn CreateWindowExW(
-        dwExStyle: DWORD,
-        lpClassName: LPCWSTR,
-        lpWindowName: LPCWSTR,
-        dwStyle: DWORD,
-        x: c_int,
-        y: c_int,
-        nWidth: c_int,
-        nHeight: c_int,
-        hWndParent: HWND,
-        hMenu: HANDLE,
-        hInstance: HMODULE,
-        lpParam: LPVOID,
-    ) -> HWND;
-    pub fn ShowWindow(hWnd: HWND, nCmdShow: c_int) -> BOOL;
-    pub fn UpdateWindow(hWnd: HWND) -> BOOL;
-    pub fn GetMessageW(
-        lpMsg: *mut MSG,
-        hWnd: HWND,
-        wMsgFilterMin: UINT,
-        wMsgFilterMax: UINT,
-    ) -> BOOL;
-    pub fn TranslateMessage(lpMsg: *const MSG) -> BOOL;
-    pub fn DispatchMessageW(lpMsg: *const MSG) -> LRESULT;
-    pub fn DefWindowProcW(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) -> LRESULT;
-    pub fn PostQuitMessage(nExitCode: c_int);
-    pub fn DestroyWindow(hWnd: HWND) -> BOOL;
-    pub fn InvalidateRect(hWnd: HWND, lpRect: *const RECT, bErase: BOOL) -> BOOL;
-    pub fn BeginPaint(hWnd: HWND, lpPaint: *mut PAINTSTRUCT) -> HDC;
-    pub fn EndPaint(hWnd: HWND, lpPaint: *const PAINTSTRUCT) -> BOOL;
-    pub fn GetClientRect(hWnd: HWND, lpRect: *mut RECT) -> BOOL;
-    pub fn EnableWindow(hWnd: HWND, bEnable: BOOL) -> BOOL;
-    pub fn MoveWindow(
-        hWnd: HWND,
-        x: c_int,
-        y: c_int,
-        nWidth: c_int,
-        nHeight: c_int,
-        bRepaint: BOOL,
-    ) -> BOOL;
-    pub fn SetWindowTextW(hWnd: HWND, lpString: LPCWSTR) -> BOOL;
-    pub fn DrawTextW(
-        hDC: HDC,
-        lpchText: LPCWSTR,
-        cchText: c_int,
-        lprc: *mut RECT,
-        format: UINT,
-    ) -> c_int;
-    pub fn GetDlgItem(hDlg: HWND, nIDDlgItem: c_int) -> HWND;
-    pub fn GetDC(hWnd: HWND) -> HDC;
-    pub fn ReleaseDC(hWnd: HWND, hDC: HDC) -> c_int;
-    pub fn SendMessageW(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) -> LRESULT;
-    pub fn SetProcessDPIAware() -> BOOL;
-}
-
-#[link(name = "gdi32")]
-unsafe extern "system" {
-    pub fn GetDeviceCaps(hdc: HDC, index: c_int) -> c_int;
-    pub fn CreateFontW(
-        cHeight: c_int,
-        cWidth: c_int,
-        cEscapement: c_int,
-        cOrientation: c_int,
-        cWeight: c_int,
-        bItalic: DWORD,
-        bUnderline: DWORD,
-        bStrikeOut: DWORD,
-        iCharSet: c_int,
-        iOutPrecision: c_int,
-        iClipPrecision: c_int,
-        iQuality: c_int,
-        iPitchAndFamily: c_int,
-        pszFaceName: LPCWSTR,
-    ) -> HFONT;
-    pub fn SelectObject(hdc: HDC, h: HANDLE) -> HANDLE;
-    pub fn DeleteObject(ho: HANDLE) -> BOOL;
-}
-
-pub type ATOM = u16;
-
-#[repr(C)]
-pub struct MSG {
-    pub hwnd: HWND,
-    pub message: UINT,
-    pub wParam: WPARAM,
-    pub lParam: LPARAM,
-    pub time: DWORD,
-    pub pt: POINT,
-}
-
-#[repr(C)]
-pub struct POINT {
-    pub x: c_int,
-    pub y: c_int,
-}
-
-#[link(name = "ole32")]
-unsafe extern "system" {
-    pub fn OleInitialize(pvReserved: LPVOID) -> HRESULT;
-    pub fn OleUninitialize();
-}
-
-#[link(name = "oleaut32")]
-unsafe extern "system" {
-    pub fn OleLoadPicturePath(
-        szURL: LPCWSTR,
-        pCaller: LPVOID,
-        dwReserved: DWORD,
-        clrReserved: c_uint,
-        riid: *const IID,
-        ppvObj: *mut LPVOID,
-    ) -> HRESULT;
-}
+// CreateFontW 参数
+pub const FW_NORMAL: c_int = 400;
+pub const DEFAULT_CHARSET: c_int = 1;
+pub const OUT_TT_PRECIS: c_int = 4;
+pub const CLEARTYPE_QUALITY: c_int = 5;
+pub const DEFAULT_PITCH: c_int = 0;
 
 /// 图片获取器：返回新下载的图片临时路径（None 表示失败）。
 ///
@@ -287,7 +67,7 @@ pub struct PreviewState {
     pub picture: Option<*mut IPicture>,
     pub loading: bool,
     pub fetch: Box<Fetcher>,
-    /// 窗口所在显示器 DPI（96/120/144…），所有尺寸按它缩放。
+    /// 窗口当前所在显示器 DPI（96/120/144…），所有尺寸按它缩放。
     pub dpi: u32,
     /// 按 DPI 缩放的 UI 字体（退出时释放）。
     pub font: HFONT,
@@ -310,31 +90,17 @@ where
     CONFIRMED.store(false, Ordering::SeqCst);
     unsafe {
         OleInitialize(core::ptr::null_mut());
-        // 声明系统级 DPI 感知：否则在缩放显示器（如 150%）上整个窗口
-        // 会被系统位图拉伸，图片和文字都发虚。必须在创建窗口/取 DC 前调用。
+        // 声明系统级 DPI 感知：否则在缩放显示器上整个窗口
+        // 会被系统位图拉伸，图片和文字都发虚。
         SetProcessDPIAware();
     }
-
-    // 读取系统 DPI（96 = 100%，144 = 150%），全部 UI 尺寸按它缩放
-    let dpi = unsafe {
-        let dc = GetDC(core::ptr::null_mut());
-        let mut d = 96u32;
-        if !dc.is_null() {
-            let v = GetDeviceCaps(dc, LOGPIXELSX);
-            if v >= 96 {
-                d = v as u32;
-            }
-            ReleaseDC(core::ptr::null_mut(), dc);
-        }
-        d
-    };
 
     let state = Box::new(PreviewState {
         image_path: None,
         picture: None,
         loading: true,
         fetch: Box::new(fetch),
-        dpi,
+        dpi: 96, // 初始占位，窗口创建后由 GetDpiForWindow 更新
         font: core::ptr::null_mut(),
     });
     let state_ptr = Box::into_raw(state);
@@ -374,8 +140,8 @@ where
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            scale_px(900, dpi),
-            scale_px(700, dpi),
+            900,
+            700,
             core::ptr::null_mut(),
             core::ptr::null_mut(),
             hinstance,
@@ -389,6 +155,15 @@ where
             OleUninitialize();
         }
         return None;
+    }
+
+    // 窗口创建后读取其所在显示器的真实 DPI（支持多显示器不同缩放）
+    let dpi = unsafe {
+        let d = GetDpiForWindow(hwnd);
+        if d >= 96 { d } else { 96 }
+    };
+    unsafe {
+        (*state_ptr).dpi = dpi;
     }
 
     unsafe {
@@ -467,6 +242,14 @@ unsafe extern "system" fn wnd_proc(
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
 
             let dpi = (*state_ptr).dpi;
+            if dpi == 96 {
+                // fallback：窗口创建前 dpi 未写入时的安全值
+                let fallback = GetDpiForWindow(hwnd);
+                if fallback >= 96 {
+                    (*state_ptr).dpi = fallback;
+                }
+            }
+            let dpi = (*state_ptr).dpi;
 
             // 按 DPI 创建 UI 字体（9 磅 Segoe UI），供按钮与提示文字共用
             let face: Vec<u16> = "Segoe UI".encode_utf16().chain(Some(0)).collect();
@@ -526,6 +309,19 @@ unsafe extern "system" fn wnd_proc(
             EnableWindow(btn_set, 0);
             EnableWindow(btn_next, 0);
             0
+        }
+        WM_DPICHANGED => {
+            // 窗口被拖到不同 DPI 的显示器，重新读取 DPI 并刷新
+            let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut PreviewState;
+            if !state_ptr.is_null() {
+                let new_dpi = (wparam & 0xFFFF) as u32;
+                if new_dpi >= 96 {
+                    (*state_ptr).dpi = new_dpi;
+                    InvalidateRect(hwnd, core::ptr::null(), 1);
+                }
+            }
+            // 让 DefWindowProcW 处理建议的窗口大小
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_SIZE => {
             // 窗口大小变化时，按 DPI 把按钮重新布局到底部居中
@@ -745,6 +541,30 @@ const GWLP_USERDATA: c_int = -21;
 unsafe extern "system" {
     fn SetWindowLongPtrW(hWnd: HWND, nIndex: c_int, dwNewLong: isize) -> isize;
     fn GetWindowLongPtrW(hWnd: HWND, nIndex: c_int) -> isize;
+    pub fn GetDpiForWindow(hwnd: HWND) -> UINT;
+}
+
+#[link(name = "gdi32")]
+unsafe extern "system" {
+    pub fn GetDeviceCaps(hdc: HDC, index: c_int) -> c_int;
+    pub fn CreateFontW(
+        cHeight: c_int,
+        cWidth: c_int,
+        cEscapement: c_int,
+        cOrientation: c_int,
+        cWeight: c_int,
+        bItalic: DWORD,
+        bUnderline: DWORD,
+        bStrikeOut: DWORD,
+        iCharSet: c_int,
+        iOutPrecision: c_int,
+        iClipPrecision: c_int,
+        iQuality: c_int,
+        iPitchAndFamily: c_int,
+        pszFaceName: LPCWSTR,
+    ) -> HFONT;
+    pub fn SelectObject(hdc: HDC, h: HANDLE) -> HANDLE;
+    pub fn DeleteObject(ho: HANDLE) -> BOOL;
 }
 
 #[cfg(test)]
