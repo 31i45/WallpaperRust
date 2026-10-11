@@ -17,8 +17,6 @@ pub const WM_DESTROY: UINT = 0x0002;
 pub const WM_CLOSE: UINT = 0x0010;
 pub const WM_SIZE: UINT = 0x0005;
 
-pub const MB_OK: UINT = 0x0000_0000;
-pub const MB_ICONINFORMATION: UINT = 0x0000_0040;
 pub const DT_CENTER: UINT = 0x0000_0001;
 pub const DT_VCENTER: UINT = 0x0000_0004;
 pub const DT_SINGLELINE: UINT = 0x0000_0020;
@@ -176,7 +174,6 @@ unsafe extern "system" {
     pub fn EndPaint(hWnd: HWND, lpPaint: *const PAINTSTRUCT) -> BOOL;
     pub fn GetClientRect(hWnd: HWND, lpRect: *mut RECT) -> BOOL;
     pub fn EnableWindow(hWnd: HWND, bEnable: BOOL) -> BOOL;
-    pub fn MessageBoxW(hWnd: HWND, lpText: LPCWSTR, lpCaption: LPCWSTR, uType: UINT) -> c_int;
     pub fn MoveWindow(
         hWnd: HWND,
         x: c_int,
@@ -232,11 +229,18 @@ unsafe extern "system" {
     ) -> HRESULT;
 }
 
+/// 图片获取器：返回新下载的图片临时路径（None 表示失败）。
+///
+/// 由调用方注入，使预览窗口（机制层）不依赖下载编排（编排层），
+/// 既消除层间反向依赖，也便于在测试中替换为假数据源。
+pub type Fetcher = dyn FnMut() -> Option<String>;
+
 /// 预览窗口状态。
 pub struct PreviewState {
     pub image_path: Option<String>,
     pub picture: Option<*mut IPicture>,
     pub loading: bool,
+    pub fetch: Box<Fetcher>,
 }
 
 /// 用户是否点击了"设为锁屏"。
@@ -245,9 +249,14 @@ static CONFIRMED: AtomicBool = AtomicBool::new(false);
 /// 运行预览窗口，返回用户确认时的图片路径。
 /// None = 用户关闭/取消。
 ///
+/// `fetch` 负责提供图片（首次加载与每次"换一张"都会调用）。
+///
 /// 体验优化：先创建窗口显示"正在下载..."，再下载图片，
 /// 避免用户双击后数秒无任何反馈。
-pub fn show_preview() -> Option<String> {
+pub fn show_preview<F>(fetch: F) -> Option<String>
+where
+    F: FnMut() -> Option<String> + 'static,
+{
     CONFIRMED.store(false, Ordering::SeqCst);
     unsafe {
         OleInitialize(core::ptr::null_mut());
@@ -257,6 +266,7 @@ pub fn show_preview() -> Option<String> {
         image_path: None,
         picture: None,
         loading: true,
+        fetch: Box::new(fetch),
     });
     let state_ptr = Box::into_raw(state);
 
@@ -318,7 +328,8 @@ pub fn show_preview() -> Option<String> {
     }
 
     // 先显示"正在下载..."，再下载（窗口已可见，用户有反馈）
-    if let Some(path) = crate::download_to_temp() {
+    let fetched = unsafe { ((*state_ptr).fetch)() };
+    if let Some(path) = fetched {
         unsafe {
             let state = &mut *state_ptr;
             state.image_path = Some(path);
@@ -540,8 +551,8 @@ unsafe extern "system" fn wnd_proc(
                         SetWindowTextW(hwnd, loading_title.as_ptr());
                         InvalidateRect(hwnd, core::ptr::null(), 1);
 
-                        // 下载（阻塞 UI，但有加载提示）
-                        match crate::download_to_temp() {
+                        // 获取下一张（阻塞 UI，但有加载提示）
+                        match (state.fetch)() {
                             Some(new_path) => {
                                 // 新图就绪，再替换旧资源
                                 if let Some(pic) = state.picture.take() {

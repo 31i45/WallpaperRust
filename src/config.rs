@@ -1,10 +1,16 @@
-//! 路径配置（纯逻辑，可测试）。
+//! 应用策略常量与路径配置（纯逻辑，可测试）。
 
 /// 应用名（用于目录、临时文件前缀）。
 pub const APP_NAME: &str = "WallpaperRust";
 
 /// 临时文件前缀。
 pub const TEMP_PREFIX: &str = "temp_wallpaper_";
+
+/// 下载重试次数（含首次）。
+pub const MAX_DOWNLOAD_RETRIES: usize = 3;
+
+/// 两次重试之间的等待秒数。
+pub const RETRY_DELAY_SECS: u64 = 1;
 
 /// 给定临时目录根，返回应用临时目录路径。
 pub fn temp_dir(root: &str) -> String {

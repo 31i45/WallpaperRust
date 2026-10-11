@@ -4,12 +4,10 @@
 //! 两个 binary 各自负责交互逻辑（桌面版无界面直接退出，锁屏版带预览窗口）。
 
 pub mod config;
-pub mod schedule;
 pub mod sources;
 pub mod validate;
 pub mod win32;
 
-use schedule::*;
 use sources::*;
 use std::fs;
 use std::thread;
@@ -18,13 +16,8 @@ use win32::http;
 use win32::sysinfo;
 use win32::wallpaper;
 
-/// 获取当前主显示器分辨率。
-pub fn screen_resolution() -> (u32, u32) {
-    sysinfo::screen_resolution()
-}
-
 /// 解析图源，返回候选图片 URL 列表（按优先级排序）。
-pub fn resolve_image_urls(source: &Source, width: u32, height: u32) -> Vec<String> {
+pub(crate) fn resolve_image_urls(source: &Source, width: u32, height: u32) -> Vec<String> {
     match source.kind {
         SourceKind::Direct => vec![render_url(source.url, width, height)],
         SourceKind::BingDaily => {
@@ -45,20 +38,20 @@ pub fn resolve_image_urls(source: &Source, width: u32, height: u32) -> Vec<Strin
 
 /// 遍历所有图源，下载并校验第一张有效 JPEG，返回字节数据。
 /// 全部失败返回 None。
-pub fn fetch_wallpaper_bytes(width: u32, height: u32) -> Option<Vec<u8>> {
+pub(crate) fn fetch_wallpaper_bytes(width: u32, height: u32) -> Option<Vec<u8>> {
     let sources = builtin_sources();
     let ordered = shuffle_sources(&sources, fast_rand);
 
     for source in &ordered {
         let urls = resolve_image_urls(source, width, height);
         for url in &urls {
-            for _ in 0..MAX_DOWNLOAD_RETRIES {
+            for _ in 0..config::MAX_DOWNLOAD_RETRIES {
                 if let Some(data) = http::download(url)
                     && is_valid_jpeg(&data)
                 {
                     return Some(data);
                 }
-                thread::sleep(std::time::Duration::from_secs(RETRY_DELAY_SECS));
+                thread::sleep(std::time::Duration::from_secs(config::RETRY_DELAY_SECS));
             }
         }
     }
@@ -70,7 +63,7 @@ pub fn fetch_wallpaper_bytes(width: u32, height: u32) -> Option<Vec<u8>> {
 /// 只删除本应用命名（temp_wallpaper_*.jpg）且修改时间超过
 /// [`config::STALE_TEMP_SECS`] 的文件；新文件（可能属于并发实例）不动。
 /// 单次运行只持续数秒且正常退出会自行删除，因此能留下的旧文件必然来自异常退出。
-pub fn cleanup_stale_temp_files() {
+pub(crate) fn cleanup_stale_temp_files() {
     let Some(root) = sysinfo::temp_path_root() else {
         return;
     };
@@ -111,7 +104,7 @@ pub fn download_to_temp() -> Option<String> {
     fs::create_dir_all(&dir).ok()?;
     cleanup_stale_temp_files();
 
-    let (w, h) = screen_resolution();
+    let (w, h) = sysinfo::screen_resolution();
     let data = fetch_wallpaper_bytes(w, h)?;
     let ts = now_secs();
     let path = config::temp_download_path(&root, ts);
@@ -127,6 +120,28 @@ pub fn set_desktop_wallpaper(image_path: &str) -> bool {
 /// 设为锁屏壁纸（需管理员权限）。
 pub fn set_lock_wallpaper(image_path: &str) -> bool {
     wallpaper::set_lock_screen_wallpaper(image_path)
+}
+
+/// 当前进程是否拥有管理员权限。
+pub fn is_admin() -> bool {
+    sysinfo::is_admin()
+}
+
+/// 以管理员身份重新启动自身（触发 UAC）。成功时调用方应立即退出当前进程。
+pub fn relaunch_as_admin() -> bool {
+    sysinfo::relaunch_as_admin()
+}
+
+/// 弹出锁屏壁纸预览窗口。
+///
+/// `fetcher` 负责提供新图片（首次加载与每次"换一张"都调用它），
+/// 返回用户确认的图片路径；关闭窗口则返回 None。
+/// 通过注入 fetcher，预览窗口这一机制层不依赖下载编排，可独立测试。
+pub fn show_preview<F>(fetcher: F) -> Option<String>
+where
+    F: FnMut() -> Option<String> + 'static,
+{
+    win32::preview::show_preview(fetcher)
 }
 
 fn now_secs() -> u64 {

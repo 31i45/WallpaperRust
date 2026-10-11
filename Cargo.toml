@@ -1,6 +1,6 @@
 [package]
 name = "wallpaper_rust"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2024"
 authors = ["31i45"]
 license = "MIT"
@@ -12,7 +12,7 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "DesktopRust"
-path = "src/main.rs"
+path = "src/bin/desktop.rs"
 
 [[bin]]
 name = "LockscreenRust"

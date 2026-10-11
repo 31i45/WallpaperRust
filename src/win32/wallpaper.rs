@@ -93,14 +93,6 @@ pub fn set_lock_screen_wallpaper(image_path: &str) -> bool {
     }
 }
 
-/// 同时设置桌面和锁屏壁纸。锁屏失败（如无管理员权限）不影响桌面。
-pub fn set_wallpaper_both(image_path: &str) -> bool {
-    let desktop_ok = set_wallpaper(image_path);
-    // 锁屏失败静默忽略：零操作理念，不弹窗
-    let _ = set_lock_screen_wallpaper(image_path);
-    desktop_ok
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

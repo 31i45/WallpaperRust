@@ -54,7 +54,7 @@ pub fn parse_url(url: &str) -> Option<ParsedUrl<'_>> {
 pub fn download(url: &str) -> Option<Vec<u8>> {
     let parsed = parse_url(url)?;
     unsafe {
-        let agent: Vec<u16> = "WallpaperFlowZero/1.0"
+        let agent: Vec<u16> = concat!("WallpaperRust/", env!("CARGO_PKG_VERSION"))
             .encode_utf16()
             .chain(Some(0))
             .collect();

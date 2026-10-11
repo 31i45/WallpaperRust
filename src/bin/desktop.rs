@@ -8,18 +8,13 @@ use std::fs;
 use wallpaper_rust::{download_to_temp, set_desktop_wallpaper};
 
 fn main() {
-    // 下载壁纸到临时文件
+    // 下载壁纸到临时文件（内部含崩溃残留垃圾回收）
     let temp_path = match download_to_temp() {
         Some(p) => p,
         None => return, // 所有图源失败，静默退出
     };
 
-    // 设为桌面壁纸
-    let ok = set_desktop_wallpaper(&temp_path);
-
-    // 无论成功失败，清理临时文件
+    // 设为桌面壁纸，无论成败都清理临时文件
+    let _ = set_desktop_wallpaper(&temp_path);
     let _ = fs::remove_file(&temp_path);
-
-    // 桌面壁纸设置失败时静默退出（零操作理念）
-    let _ = ok;
 }
