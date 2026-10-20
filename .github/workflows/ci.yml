@@ -3,70 +3,39 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
     branches: [main]
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
-  check:
-    name: fmt / clippy / test
+  quality:
+    name: Format + Clippy + Test + Size
     runs-on: windows-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: fmt
+      - name: Format check
         run: cargo fmt --all -- --check
 
-      - name: clippy
+      - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: test
+      - name: Test
         run: cargo test --lib
 
-  release:
-    name: build & publish release
-    needs: check
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: windows-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
       - name: Build release
-        run: cargo build --release --locked
+        run: cargo build --release
 
-      - name: Package binaries and checksums
-        shell: pwsh
+      - name: Size check
         run: |
-          New-Item -ItemType Directory -Path dist | Out-Null
-          Copy-Item target/release/DesktopRust.exe dist/
-          Copy-Item target/release/LockscreenRust.exe dist/
-          Push-Location dist
-          Get-FileHash -Algorithm SHA256 *.exe |
-            ForEach-Object { "$($_.Hash.ToLower())  $([IO.Path]::GetFileName($_.Path))" } |
-            Set-Content -Encoding ascii SHA256SUMS
-          Pop-Location
-
-      - name: Create GitHub release
-        shell: pwsh
-        run: gh release create ${{ github.ref_name }} dist/* --generate-notes
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          $desktop = (Get-Item target/release/DesktopRust.exe).Length
+          $lock = (Get-Item target/release/LockscreenRust.exe).Length
+          Write-Host "DesktopRust: $desktop bytes ($([math]::Round($desktop/1024)) KB)"
+          Write-Host "LockscreenRust: $lock bytes ($([math]::Round($lock/1024)) KB)"
+          if ($desktop -gt 153600) { throw "DesktopRust exceeds 150 KB threshold: $desktop" }
+          if ($lock -gt 163840) { throw "LockscreenRust exceeds 160 KB threshold: $lock" }
+          Write-Host "Both executables within size limits."

@@ -70,11 +70,8 @@ pub(crate) fn fetch_wallpaper_bytes(width: u32, height: u32) -> Option<Vec<u8>> 
 /// 只删除本应用命名（temp_wallpaper_*.jpg）且修改时间超过
 /// [`config::STALE_TEMP_SECS`] 的文件；新文件（可能属于并发实例）不动。
 /// 单次运行只持续数秒且正常退出会自行删除，因此能留下的旧文件必然来自异常退出。
-pub(crate) fn cleanup_stale_temp_files() {
-    let Some(root) = sysinfo::temp_path_root() else {
-        return;
-    };
-    let dir = config::temp_dir(&root);
+pub(crate) fn cleanup_stale_temp_files(root: &str) {
+    let dir = config::temp_dir(root);
     let Ok(entries) = fs::read_dir(&dir) else {
         return;
     };
@@ -109,7 +106,7 @@ pub fn download_to_temp() -> Option<String> {
     let root = sysinfo::temp_path_root().unwrap_or_else(|| "C:\\Windows\\Temp".to_string());
     let dir = config::temp_dir(&root);
     fs::create_dir_all(&dir).ok()?;
-    cleanup_stale_temp_files();
+    cleanup_stale_temp_files(&root);
 
     let (w, h) = sysinfo::screen_resolution();
     let data = fetch_wallpaper_bytes(w, h)?;

@@ -3,6 +3,7 @@
 //! 不依赖任何第三方 HTTP 库，仅使用系统自带的 winhttp.dll。
 
 use super::*;
+use crate::config::MAX_DOWNLOAD_BYTES;
 
 /// 解析后的 URL 组件。
 #[derive(Debug, PartialEq, Eq)]
@@ -148,6 +149,9 @@ pub fn download(url: &str) -> Option<Vec<u8>> {
                 if available == 0 {
                     break;
                 }
+                if data.len() as u64 + available as u64 > MAX_DOWNLOAD_BYTES as u64 {
+                    return None; // 即将超限，提前拒绝（防御恶意宣称超大 available 的 DoS）
+                }
                 let mut buf = vec![0u8; available as usize];
                 let mut read: DWORD = 0;
                 if WinHttpReadData(request, buf.as_mut_ptr() as LPVOID, available, &mut read) == 0 {
@@ -157,6 +161,9 @@ pub fn download(url: &str) -> Option<Vec<u8>> {
                     break;
                 }
                 data.extend_from_slice(&buf[..read as usize]);
+                if data.len() > MAX_DOWNLOAD_BYTES {
+                    return None; // 超大响应，可能是恶意构造
+                }
             }
 
             Some(data)

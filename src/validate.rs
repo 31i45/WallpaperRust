@@ -1,7 +1,7 @@
 //! JPEG 完整性校验（纯逻辑，可测试）。
 //!
 //! 原版 Python 代码无任何完整性校验，下载到半截文件会直接设为壁纸导致黑屏。
-//! 此处提供三重校验：SOI 魔数、EOI 结尾、最小字节数。
+//! 此处三重校验：SOI 魔数、EOI 标记存在、最小字节数。
 
 pub const MIN_JPEG_BYTES: usize = 1024;
 const JPEG_SOI: [u8; 3] = [0xFF, 0xD8, 0xFF];

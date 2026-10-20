@@ -12,6 +12,10 @@ pub const MAX_DOWNLOAD_RETRIES: usize = 3;
 /// 两次重试之间的等待秒数。
 pub const RETRY_DELAY_SECS: u64 = 1;
 
+/// 单次下载的最大字节数。超过则中断（防御恶意构造的超大响应）。
+/// Bing UHD JPEG 上限约 6 MB，留 2 MB 余量。
+pub const MAX_DOWNLOAD_BYTES: usize = 8 * 1024 * 1024;
+
 /// 给定临时目录根，返回应用临时目录路径。
 pub fn temp_dir(root: &str) -> String {
     format!("{}\\{}", root, APP_NAME)

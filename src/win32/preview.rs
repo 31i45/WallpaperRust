@@ -11,7 +11,6 @@
 use super::com::*;
 use super::*;
 use core::ffi::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 // ---- 窗口/消息常量 ----
 pub const WM_CREATE: UINT = 0x0001;
@@ -71,10 +70,9 @@ pub struct PreviewState {
     pub dpi: u32,
     /// 按 DPI 缩放的 UI 字体（退出时释放）。
     pub font: HFONT,
+    /// 用户是否点击了"设为锁屏"。
+    pub confirmed: bool,
 }
-
-/// 用户是否点击了"设为锁屏"。
-static CONFIRMED: AtomicBool = AtomicBool::new(false);
 
 /// 运行预览窗口，返回用户确认时的图片路径。
 /// None = 用户关闭/取消。
@@ -87,7 +85,6 @@ pub fn show_preview<F>(fetch: F) -> Option<String>
 where
     F: FnMut() -> Option<String> + 'static,
 {
-    CONFIRMED.store(false, Ordering::SeqCst);
     unsafe {
         OleInitialize(core::ptr::null_mut());
         // 声明系统级 DPI 感知：否则在缩放显示器上整个窗口
@@ -102,6 +99,7 @@ where
         fetch: Box::new(fetch),
         dpi: 96, // 初始占位，窗口创建后由 GetDpiForWindow 更新
         font: core::ptr::null_mut(),
+        confirmed: false,
     });
     let state_ptr = Box::into_raw(state);
 
@@ -208,8 +206,9 @@ where
         }
     }
 
-    // 清理并返回结果
-    let result = if CONFIRMED.load(Ordering::SeqCst) {
+    // 清理并返回结果：先从 state_ptr 读取 confirmed 和 image_path，再 Box::from_raw 消费句柄
+    let confirmed = unsafe { (*state_ptr).confirmed };
+    let result = if confirmed {
         unsafe { (*state_ptr).image_path.clone() }
     } else {
         None
@@ -311,13 +310,29 @@ unsafe extern "system" fn wnd_proc(
             0
         }
         WM_DPICHANGED => {
-            // 窗口被拖到不同 DPI 的显示器，重新读取 DPI 并刷新
+            // 窗口被拖到不同 DPI 的显示器，更新 DPI、重绘图片、重排按钮
             let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut PreviewState;
             if !state_ptr.is_null() {
                 let new_dpi = (wparam & 0xFFFF) as u32;
                 if new_dpi >= 96 {
                     (*state_ptr).dpi = new_dpi;
                     InvalidateRect(hwnd, core::ptr::null(), 1);
+
+                    // Windows 不保证 DPICHANGED 后一定发 SIZE，主动重排按钮
+                    let btn_set = GetDlgItem(hwnd, BTN_SET as c_int);
+                    let btn_next = GetDlgItem(hwnd, BTN_NEXT as c_int);
+                    let mut client: RECT = core::mem::zeroed();
+                    GetClientRect(hwnd, &mut client);
+                    let width = client.right - client.left;
+                    let height = client.bottom - client.top;
+                    let set_w = scale_px(150, new_dpi);
+                    let next_w = scale_px(120, new_dpi);
+                    let btn_h = scale_px(40, new_dpi);
+                    let gap = scale_px(20, new_dpi);
+                    let btn_y = height - scale_px(70, new_dpi);
+                    let start_x = (width - set_w - gap - next_w) / 2;
+                    MoveWindow(btn_set, start_x, btn_y, set_w, btn_h, 1);
+                    MoveWindow(btn_next, start_x + set_w + gap, btn_y, next_w, btn_h, 1);
                 }
             }
             // 让 DefWindowProcW 处理建议的窗口大小
@@ -456,8 +471,11 @@ unsafe extern "system" fn wnd_proc(
             let id = wparam & 0xFFFF;
             match id {
                 BTN_SET => {
-                    // 用户确认设为锁屏，设置标志并关闭窗口
-                    CONFIRMED.store(true, Ordering::SeqCst);
+                    // 用户确认设为锁屏，标记 confirmed 并关闭窗口
+                    let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut PreviewState;
+                    if !state_ptr.is_null() {
+                        (*state_ptr).confirmed = true;
+                    }
                     DestroyWindow(hwnd);
                 }
                 BTN_NEXT => {
