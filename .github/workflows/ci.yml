@@ -3,20 +3,27 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
     branches: [main]
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  quality:
-    name: Format + Clippy + Test + Size
+  check:
+    name: fmt / clippy / test / size
     runs-on: windows-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install Rust
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -27,10 +34,8 @@ jobs:
       - name: Test
         run: cargo test --lib
 
-      - name: Build release
-        run: cargo build --release
-
       - name: Size check
+        shell: pwsh
         run: |
           $desktop = (Get-Item target/release/DesktopRust.exe).Length
           $lock = (Get-Item target/release/LockscreenRust.exe).Length
@@ -39,3 +44,40 @@ jobs:
           if ($desktop -gt 153600) { throw "DesktopRust exceeds 150 KB threshold: $desktop" }
           if ($lock -gt 163840) { throw "LockscreenRust exceeds 160 KB threshold: $lock" }
           Write-Host "Both executables within size limits."
+
+  release:
+    name: build & publish release
+    needs: check
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release --locked
+
+      - name: Package binaries and checksums
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist | Out-Null
+          Copy-Item target/release/DesktopRust.exe dist/
+          Copy-Item target/release/LockscreenRust.exe dist/
+          Push-Location dist
+          Get-FileHash -Algorithm SHA256 *.exe |
+            ForEach-Object { "$($_.Hash.ToLower())  $([IO.Path]::GetFileName($_.Path))" } |
+            Set-Content -Encoding ascii SHA256SUMS
+          Pop-Location
+
+      - name: Create GitHub release
+        shell: pwsh
+        run: gh release create ${{ github.ref_name }} dist/* --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
