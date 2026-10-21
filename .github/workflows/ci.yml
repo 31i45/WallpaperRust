@@ -34,6 +34,9 @@ jobs:
       - name: Test
         run: cargo test --lib
 
+      - name: Build release
+        run: cargo build --release
+
       - name: Size check
         shell: pwsh
         run: |
