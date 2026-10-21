@@ -21,6 +21,15 @@ pub fn temp_dir(root: &str) -> String {
     format!("{}\\{}", root, APP_NAME)
 }
 
+/// 给定应用数据根（%APPDATA%），返回桌面壁纸持久存放路径。
+///
+/// SystemParametersInfoW 只登记路径、不复制文件，指向 %TEMP% 的文件被删除后
+/// Shell 刷新壁纸会读不到而回退纯黑，因此壁纸文件必须放在持久目录。
+/// 固定文件名：每次换壁纸覆盖写入，不堆积历史文件。
+pub fn wallpaper_dest(appdata_root: &str) -> String {
+    format!("{}\\{}\\wallpaper.jpg", appdata_root, APP_NAME)
+}
+
 /// 给定临时目录、时间戳、进程 ID 与进程内序号，返回临时下载文件路径。
 ///
 /// 同时包含 pid 与单调 seq：仅用秒级时间戳命名时，锁屏"换一张"若在
@@ -59,6 +68,14 @@ mod tests {
     #[test]
     fn temp_dir_appends_app_name() {
         assert_eq!(temp_dir("C:\\Temp"), "C:\\Temp\\WallpaperRust");
+    }
+
+    #[test]
+    fn wallpaper_dest_under_appdata() {
+        assert_eq!(
+            wallpaper_dest("C:\\Users\\u\\AppData\\Roaming"),
+            "C:\\Users\\u\\AppData\\Roaming\\WallpaperRust\\wallpaper.jpg"
+        );
     }
 
     #[test]
