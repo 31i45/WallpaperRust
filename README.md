@@ -12,7 +12,7 @@
 ## 特性
 
 - **零第三方依赖**：手写 Win32 FFI（WinHTTP / SystemParametersInfo / PersonalizationCSP / COM），无任何 crate 依赖
-- **单文件 150KB 左右**：DesktopRust ~144KB，LockscreenRust ~152KB，无需安装
+- **单文件 150KB 左右**：DesktopRust ~143KB，LockscreenRust ~151KB，无需安装
 - **高质量图源**：Bing 每日壁纸 UHD（4K），每次从近 8 张精选中随机取一张；UHD→HD→Picsum 多级降级
 - **下载完整性校验**：JPEG SOI/EOI 标记 + 最小字节三重校验，杜绝半截图片导致黑屏
 - **锁屏预览**：设置锁屏前先预览，可"换一张"，满意后再应用（锁屏后无法直接查看效果）
@@ -41,7 +41,7 @@ cargo build --release
 
 产物位于 `target/release/DesktopRust.exe` 与 `target/release/LockscreenRust.exe`。
 
-质量门禁（33 个单元测试）：
+质量门禁（34 个单元测试）：
 
 ```powershell
 cargo fmt --all -- --check
@@ -51,8 +51,11 @@ cargo test --lib
 
 ## 工作原理
 
-**桌面壁纸**：下载图片到临时目录后调用 `SystemParametersInfoW(SPI_SETDESKWALLPAPER)`，
+**桌面壁纸**：下载图片并校验后，先写入持久路径 `%APPDATA%\WallpaperRust\wallpaper.jpg`
+（固定文件名覆盖写），再调用 `SystemParametersInfoW(SPI_SETDESKWALLPAPER)`，
 传入 `SPIF_UPDATEINIFILE | SPIF_SENDCHANGE` 持久化并广播变更。
+壁纸必须指向持久文件——`SystemParametersInfoW` 只登记路径、不复制文件，
+若指向临时目录（会被清理或删除），Shell 下次刷新壁纸时读不到文件会回退纯黑。
 
 **锁屏壁纸**：将图片复制到 `%ProgramData%\Microsoft\Windows\Lockscreen.jpg`，
 写入 `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\PersonalizationCSP`
@@ -72,7 +75,7 @@ WallpaperRust 是对 [WallpaperFlowZero](https://github.com/31i45/WallpaperFlowZ
 （Python 实现）的 Rust 重构。重写动机：
 
 1. **依赖与体积**：原版依赖 aiohttp / asyncio / tkinter，PyInstaller 打包后 14.6 MB；
-   Rust 版零运行时依赖，两个 exe 合计约 270 KB
+   Rust 版零运行时依赖，两个 exe 合计约 294 KB
 2. **正确性缺陷**：原版下载无完整性校验、`fWinIni` 缺少 `SPIF_SENDCHANGE`、
    随机图源采用有放回抽样（死源会拖累健康源）、锁屏功能为从未生效的死代码
 3. **可测试性**：原版核心逻辑与副作用耦合，单元测试数为 0；
